@@ -34,7 +34,7 @@ class FacebookScraper(BaseScraper):
 
         input_data = {
             "startUrls": [{"url": page_url}],
-            "maxPosts": 5,  # Limited to 5 posts to save API costs
+            "maxPosts": 50,  # Up to 50 posts (covers ~30 days)
             "maxPostComments": 0,  # Skip comments to save credits
         }
 

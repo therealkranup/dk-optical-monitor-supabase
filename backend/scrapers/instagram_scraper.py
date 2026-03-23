@@ -35,7 +35,7 @@ class InstagramScraper(BaseScraper):
 
         input_data = {
             "directUrls": [profile_url],  # More reliable than usernames
-            "resultsLimit": 5,            # Max 5 posts to save API costs
+            "resultsLimit": 50,           # Up to 50 posts (covers ~30 days)
         }
 
         try:
