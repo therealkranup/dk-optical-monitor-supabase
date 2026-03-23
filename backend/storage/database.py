@@ -1,177 +1,142 @@
 """
-PostgreSQL-based storage for scraped social media posts.
-Uses Supabase (or any PostgreSQL DB) for persistent, server-independent storage.
+Supabase-based storage for scraped social media posts.
+Uses supabase-py (HTTPS/REST) to avoid IPv6 issues with GitHub Actions runners.
 """
 import json
 from datetime import datetime, timedelta
 
-import psycopg2
-import psycopg2.extras
-from psycopg2.extras import RealDictCursor
+from supabase import create_client, Client
 
-from ..config.settings import DATABASE_URL
+from ..config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 
 class PostDatabase:
-    def __init__(self, db_url: str = None):
-        self.db_url = db_url or DATABASE_URL
-        if not self.db_url:
-            raise ValueError("DATABASE_URL is not set. Add it to your .env or environment.")
-        self._init_db()
-
-    def _conn(self):
-        return psycopg2.connect(self.db_url)
-
-    def _init_db(self):
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS posts (
-                        id SERIAL PRIMARY KEY,
-                        company_id TEXT NOT NULL,
-                        company_name TEXT NOT NULL,
-                        platform TEXT NOT NULL,
-                        post_id TEXT NOT NULL,
-                        post_url TEXT,
-                        date TEXT NOT NULL,
-                        text TEXT,
-                        likes INTEGER DEFAULT 0,
-                        comments INTEGER DEFAULT 0,
-                        shares INTEGER DEFAULT 0,
-                        media_urls TEXT DEFAULT '[]',
-                        media_type TEXT DEFAULT '',
-                        scraped_at TEXT NOT NULL,
-                        UNIQUE(platform, post_id)
-                    )
-                """)
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_company_platform
-                    ON posts (company_id, platform)
-                """)
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_date
-                    ON posts (date)
-                """)
+    def __init__(self, url: str = None, key: str = None):
+        _url = url or SUPABASE_URL
+        _key = key or SUPABASE_SERVICE_KEY
+        if not _url or not _key:
+            raise ValueError(
+                "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in environment."
+            )
+        self.client: Client = create_client(_url, _key)
 
     def upsert_posts(self, posts: list[dict]) -> int:
-        """Insert or update posts. Returns count of new/updated posts."""
-        count = 0
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                for post in posts:
-                    media_urls = json.dumps(post.get("media_urls", []))
-                    try:
-                        cur.execute("""
-                            INSERT INTO posts
-                                (company_id, company_name, platform, post_id, post_url,
-                                 date, text, likes, comments, shares, media_urls, media_type, scraped_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT(platform, post_id) DO UPDATE SET
-                                likes = EXCLUDED.likes,
-                                comments = EXCLUDED.comments,
-                                shares = EXCLUDED.shares,
-                                text = EXCLUDED.text,
-                                scraped_at = EXCLUDED.scraped_at
-                        """, (
-                            post["company_id"], post["company_name"], post["platform"],
-                            post["post_id"], post["post_url"], post["date"], post["text"],
-                            post["likes"], post["comments"], post["shares"],
-                            media_urls, post["media_type"], post["scraped_at"],
-                        ))
-                        count += 1
-                    except Exception as e:
-                        print(f"Error upserting post {post.get('post_id')}: {e}")
-        return count
+        """Insert or update posts. Returns count of records submitted."""
+        if not posts:
+            return 0
+
+        rows = []
+        for post in posts:
+            rows.append({
+                "company_id":   post["company_id"],
+                "company_name": post["company_name"],
+                "platform":     post["platform"],
+                "post_id":      post["post_id"],
+                "post_url":     post.get("post_url", ""),
+                "date":         post["date"],
+                "text":         post.get("text", ""),
+                "likes":        post.get("likes", 0),
+                "comments":     post.get("comments", 0),
+                "shares":       post.get("shares", 0),
+                "media_urls":   json.dumps(post.get("media_urls", [])),
+                "media_type":   post.get("media_type", ""),
+                "scraped_at":   post["scraped_at"],
+            })
+
+        try:
+            self.client.table("posts").upsert(
+                rows, on_conflict="platform,post_id"
+            ).execute()
+            return len(rows)
+        except Exception as e:
+            print(f"Error upserting {len(rows)} posts: {e}")
+            return 0
 
     def query_posts(self, company_id: str = None, platform: str = None,
                     since_days: int = None, limit: int = 500) -> list[dict]:
         """Query posts with optional filters."""
-        conditions = ["1=1"]
-        params = []
+        query = (
+            self.client.table("posts")
+            .select("*")
+            .order("date", desc=True)
+            .limit(limit)
+        )
 
         if company_id:
-            conditions.append("company_id = %s")
-            params.append(company_id)
+            query = query.eq("company_id", company_id)
         if platform:
-            conditions.append("platform = %s")
-            params.append(platform)
+            query = query.eq("platform", platform)
         if since_days:
             cutoff = (datetime.utcnow() - timedelta(days=since_days)).isoformat()
-            conditions.append("date >= %s")
-            params.append(cutoff)
+            query = query.gte("date", cutoff)
 
-        params.append(limit)
-
-        with self._conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    f"SELECT * FROM posts WHERE {' AND '.join(conditions)} ORDER BY date DESC LIMIT %s",
-                    params,
-                )
-                rows = cur.fetchall()
-
-        return [self._row_to_dict(dict(r)) for r in rows]
+        result = query.execute()
+        return [self._row_to_dict(r) for r in (result.data or [])]
 
     def get_stats(self, since_days: int = None) -> dict:
         """Get aggregated statistics per company and platform."""
-        cutoff_clause = ""
-        params = []
-        if since_days:
-            cutoff = (datetime.utcnow() - timedelta(days=since_days)).isoformat()
-            cutoff_clause = "WHERE date >= %s"
-            params.append(cutoff)
+        # Fetch all relevant posts and aggregate client-side
+        # (supabase-py REST doesn't support GROUP BY natively)
+        posts = self.query_posts(since_days=since_days, limit=10000)
 
-        with self._conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"""
-                    SELECT
-                        company_id, company_name, platform,
-                        COUNT(*) as post_count,
-                        SUM(likes) as total_likes,
-                        SUM(comments) as total_comments,
-                        SUM(shares) as total_shares,
-                        AVG(likes) as avg_likes,
-                        AVG(comments) as avg_comments,
-                        MAX(date) as latest_post
-                    FROM posts
-                    {cutoff_clause}
-                    GROUP BY company_id, company_name, platform
-                    ORDER BY company_name, platform
-                """, params)
-                rows = cur.fetchall()
-
-        stats = {}
-        for r in [dict(r) for r in rows]:
-            cid = r["company_id"]
+        stats: dict = {}
+        for post in posts:
+            cid = post["company_id"]
             if cid not in stats:
                 stats[cid] = {
-                    "company_id": r["company_id"],
-                    "company_name": r["company_name"],
-                    "platforms": {},
-                    "totals": {"posts": 0, "likes": 0, "comments": 0, "shares": 0},
+                    "company_id":   cid,
+                    "company_name": post["company_name"],
+                    "platforms":    {},
+                    "totals":       {"posts": 0, "likes": 0, "comments": 0, "shares": 0},
                 }
-            stats[cid]["platforms"][r["platform"]] = {
-                "post_count": r["post_count"],
-                "total_likes": int(r["total_likes"] or 0),
-                "total_comments": int(r["total_comments"] or 0),
-                "total_shares": int(r["total_shares"] or 0),
-                "avg_likes": round(float(r["avg_likes"] or 0), 1),
-                "avg_comments": round(float(r["avg_comments"] or 0), 1),
-                "latest_post": r["latest_post"],
-            }
-            stats[cid]["totals"]["posts"] += r["post_count"]
-            stats[cid]["totals"]["likes"] += int(r["total_likes"] or 0)
-            stats[cid]["totals"]["comments"] += int(r["total_comments"] or 0)
-            stats[cid]["totals"]["shares"] += int(r["total_shares"] or 0)
+            plat = post["platform"]
+            if plat not in stats[cid]["platforms"]:
+                stats[cid]["platforms"][plat] = {
+                    "post_count":     0,
+                    "total_likes":    0,
+                    "total_comments": 0,
+                    "total_shares":   0,
+                    "avg_likes":      0.0,
+                    "avg_comments":   0.0,
+                    "latest_post":    None,
+                    "_likes_sum":     0,
+                    "_comments_sum":  0,
+                }
+            p = stats[cid]["platforms"][plat]
+            p["post_count"]     += 1
+            p["total_likes"]    += post.get("likes", 0)
+            p["total_comments"] += post.get("comments", 0)
+            p["total_shares"]   += post.get("shares", 0)
+            if p["latest_post"] is None or post["date"] > p["latest_post"]:
+                p["latest_post"] = post["date"]
+
+            # Update company totals
+            stats[cid]["totals"]["posts"]    += 1
+            stats[cid]["totals"]["likes"]    += post.get("likes", 0)
+            stats[cid]["totals"]["comments"] += post.get("comments", 0)
+            stats[cid]["totals"]["shares"]   += post.get("shares", 0)
+
+        # Compute averages and clean up temp keys
+        for cid, company in stats.items():
+            for plat, p in company["platforms"].items():
+                n = p["post_count"] or 1
+                p["avg_likes"]    = round(p["total_likes"]    / n, 1)
+                p["avg_comments"] = round(p["total_comments"] / n, 1)
+                p.pop("_likes_sum", None)
+                p.pop("_comments_sum", None)
 
         return stats
 
     def clear_all(self):
         """Clear all posts (for testing)."""
-        with self._conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM posts")
+        self.client.table("posts").delete().neq("id", 0).execute()
 
     def _row_to_dict(self, row: dict) -> dict:
-        row["media_urls"] = json.loads(row.get("media_urls", "[]"))
+        # media_urls is stored as a JSON string; decode it back to a list
+        raw = row.get("media_urls", "[]")
+        if isinstance(raw, str):
+            try:
+                row["media_urls"] = json.loads(raw)
+            except (ValueError, TypeError):
+                row["media_urls"] = []
         return row

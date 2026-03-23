@@ -33,4 +33,5 @@ jobs:
         run: python run.py scrape ${{ github.event.inputs.days || 30 }}
         env:
           APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

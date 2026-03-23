@@ -54,10 +54,11 @@ USER_AGENT = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# --- Data storage (PostgreSQL via Supabase) ---
-# Set DATABASE_URL in .env or as an environment variable.
-# Format: postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# --- Data storage (Supabase via REST/HTTPS) ---
+# Uses supabase-py client to avoid IPv6 issues with GitHub Actions runners.
+# Set SUPABASE_URL and SUPABASE_SERVICE_KEY in .env or as environment variables.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://kwbmzwgxancdkjkxtmgc.supabase.co")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 
 # --- Server ---
 API_HOST = "0.0.0.0"
