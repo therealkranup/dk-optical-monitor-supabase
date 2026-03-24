@@ -81,7 +81,7 @@ class InstagramScraper(BaseScraper):
                             break
                         elif status in ("FAILED", "ABORTED"):
                             print(f"[Instagram/Apify] ❌ {company['name']} run {status}")
-                            return self._generate_demo_data(company, ig_config, since_days)
+                            return []
 
                     await asyncio.sleep(1)
 
@@ -89,7 +89,7 @@ class InstagramScraper(BaseScraper):
                 dataset_id = run_info.get("data", {}).get("defaultDatasetId")
                 if not dataset_id:
                     print(f"[Instagram/Apify] ❌ No dataset_id for {company['name']}")
-                    return self._generate_demo_data(company, ig_config, since_days)
+                    return []
 
                 async with session.get(
                     f"{APIFY_API_BASE}/datasets/{dataset_id}/items",
@@ -113,7 +113,8 @@ class InstagramScraper(BaseScraper):
             print(f"[Instagram/Apify] ❌ Exception for {company['name']}: {e}")
             import traceback
             traceback.print_exc()
-            return self._generate_demo_data(company, ig_config, since_days)
+            print(f"[Instagram/Apify] ⚠️  Returning empty list (no demo data) to avoid polluting DB")
+            return []
 
     def _parse_instagram_items(self, company: dict, items: list, since_days: int) -> list[SocialPost]:
         """Parse Apify Instagram actor output.

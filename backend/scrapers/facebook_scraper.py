@@ -81,7 +81,7 @@ class FacebookScraper(BaseScraper):
                             break
                         elif status in ("FAILED", "ABORTED"):
                             print(f"[Facebook/Apify] ❌ {company['name']} run {status}")
-                            return self._generate_demo_data(company, fb_config, since_days)
+                            return []
 
                     await asyncio.sleep(1)
 
@@ -89,7 +89,7 @@ class FacebookScraper(BaseScraper):
                 dataset_id = run_info.get("data", {}).get("defaultDatasetId")
                 if not dataset_id:
                     print(f"[Facebook/Apify] ❌ No dataset_id for {company['name']}")
-                    return self._generate_demo_data(company, fb_config, since_days)
+                    return []
 
                 async with session.get(
                     f"{APIFY_API_BASE}/datasets/{dataset_id}/items",
@@ -106,7 +106,8 @@ class FacebookScraper(BaseScraper):
             print(f"[Facebook/Apify] ❌ Exception for {company['name']}: {e}")
             import traceback
             traceback.print_exc()
-            return self._generate_demo_data(company, fb_config, since_days)
+            print(f"[Facebook/Apify] ⚠️  Returning empty list (no demo data) to avoid polluting DB")
+            return []
 
     def _parse_facebook_items(self, company: dict, items: list, since_days: int) -> list[SocialPost]:
         """Parse Apify Facebook actor output."""
